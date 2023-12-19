@@ -23,44 +23,6 @@ class AES_128():
 
     Rcon = ( 0x8d, 0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80, 0x1b, 0x36, 0x6c, 0xd8, 0xab, 0x4d, 0x9a )
     
-    def subBytes(self):
-        for i, j in enumerate(self.state):
-            self.state[i] = AES_128.Sbox[j]
-    
-    def shiftRows(self):
-        temp = self.state[:4] + self.state[5:8] + [self.state[4]] + self.state[10:12] + self.state[8:10] + [self.state[15]] + self.state[12:15]
-        self.state = temp
-
-    def GMul(self,a,b):
-        p = 0
-        for c in range(8):
-            if b & 1:
-                p ^= a
-            a <<= 1
-            if (a & 0x100): # if we encounter x^8, use irreducible polynomial theorem x^8 = x^4 + x^3 + x + 1
-                a ^= 0x11b
-            b >>=1
-        return p
-    
-    def mixColumn(self):
-        s = self.state.copy()
-        for c in range(4):
-            s0 = self.GMul(0x02, s[c]) ^ self.GMul(0x03, s[c+4]) ^ s[c+8] ^ s[c+12]
-            s1 = s[c] ^ self.GMul(0x02, s[c+4]) ^ self.GMul(0x03, s[c+8]) ^ s[c+12]
-            s2 = s[c] ^ s[c+4] ^ self.GMul(0x02, s[c+8]) ^ self.GMul(0x03, s[c+12])
-            s3 = self.GMul(0x03, s[c]) ^ s[c+4] ^ s[c+8] ^ self.GMul(0x02, s[c+12])
-
-            s[c] = s0
-            s[c+4] = s1
-            s[c+8] = s2
-            s[c+12] = s3
-        self.state = s
-        return
-    
-    def add_round_key(self, rKey):
-        for i,j in enumerate(rKey):
-            self.state[i] ^= j
-
     @staticmethod
     def rot_word(word):
         return word[1:] + word[:1]
@@ -72,29 +34,69 @@ class AES_128():
     @staticmethod
     def Xor(s1, s2):
         return tuple(a^b for a,b in zip(s1, s2))
+    
+    def GMul(self,a,b):
+        p = 0
+        for c in range(8):
+            if b & 1:
+                p ^= a
+            a <<= 1
+            if (a & 0x100): # if we encounter x^8, use irreducible polynomial theorem x^8 = x^4 + x^3 + x + 1
+                a ^= 0x11b
+            b >>=1
+        return p
+    
+
+    def subBytes(self, state):
+        return [[hex(AES_128.Sbox[int(j, 16)])[2:].zfill(2) for j in row] for row in state]
+
+    def shiftRows(self, state):
+        # return [state[i][i:] + state[i][:i] for i in range(4)]
+        
+        # Transpose the state to make column operations easier
+        state = list(map(list, zip(*state)))
+
+        # Shift each column by its index
+        state = [state[i][i:] + state[i][:i] for i in range(4)]
+
+        # Transpose the state back to its original form
+        state = list(map(list, zip(*state)))
+        return state
+
+    def mixColumn(self, state):
+        state = list(map(list, zip(*state)))
+        s = [[int(j, 16) for j in row] for row in state]
+        for c in range(4):
+            s0 = self.GMul(0x02, s[0][c]) ^ self.GMul(0x03, s[1][c]) ^ s[2][c] ^ s[3][c]
+            s1 = s[0][c] ^ self.GMul(0x02, s[1][c]) ^ self.GMul(0x03, s[2][c]) ^ s[3][c]
+            s2 = s[0][c] ^ s[1][c] ^ self.GMul(0x02, s[2][c]) ^ self.GMul(0x03, s[3][c])
+            s3 = self.GMul(0x03, s[0][c]) ^ s[1][c] ^ s[2][c] ^ self.GMul(0x02, s[3][c])
+
+            s[0][c] = hex(s0)[2:].zfill(2)
+            s[1][c] = hex(s1)[2:].zfill(2)
+            s[2][c] = hex(s2)[2:].zfill(2)
+            s[3][c] = hex(s3)[2:].zfill(2)
+        s = list(map(list, zip(*s)))
+        return s
+
+    def add_round_key(self, state, rKey):
+        return [[hex((int(i, 16) if isinstance(i, str) else i) ^ (int(j, 16) if isinstance(j, str) else j))[2:].zfill(2) for i, j in zip(row, key_row)] for row, key_row in zip(state, rKey)]
 
     def keyScheduling(self, key):
         allKeys = []
-        allKeys.extend(key)
+        allKeys.append(key)
         R = 11
-        N = 4
 
-        # print("Round 0:", ''.join(format(byte, '02x') for byte in allKeys),end="")
-        
-        for i in range(N, R * 4):
-            t = allKeys[(i-1)*4:i*4]
-            if i % N == 0:
-                t = AES_128.Xor( AES_128.sub_word( AES_128.rot_word(t) ), (AES_128.Rcon[i // N],0,0,0) )
-            elif N >= 6 and i % N == 4:
-                t = AES_128.sub_word(t)
-            newKey = AES_128.Xor(t, allKeys[(i-N)*4:(i-N+1)*4])
-            allKeys.extend(newKey)
-            # if i%4==0:
-            #     print("")
-            #     print(f"Round {i // N}: ", end="")
-            # print(''.join(format(byte, '02x') for byte in newKey), end="")
-
-        # print("")
+        for i in range(1, R):
+            t = allKeys[-1]  # Get the last 4x4 key
+            t0 = self.Xor(self.sub_word(self.rot_word(t[3])), [self.Rcon[i], 0, 0, 0])  # First column of new key
+            t0 = self.Xor(t0,t[0])
+            t1 = self.Xor(t0, t[1])  # Second column of new key
+            t2 = self.Xor(t1, t[2])  # Third column of new key
+            t3 = self.Xor(t2, t[3])  # Fourth column of new key
+            newKey = [t0, t1, t2, t3]  # New 4x4 key
+            # print(''.join(''.join(format(byte, '02x') for byte in row) for row in newKey))
+            allKeys.append(newKey)        
         return allKeys
     
     def printState(self):
@@ -104,40 +106,39 @@ class AES_128():
                 print(format(self.state[index], '02x'), end=' ')
             print()
 
-    def encrypt(self, block, key):
-        self.state = list(block)
-        # self.printState()
-        keys = self.keyScheduling(key)
-        self.add_round_key(keys[0:16])
+    def encrypt(self, plaintext, key):
+        state = [[int(plaintext[i:i+2], 16) for i in range(j, j+8, 2)] for j in range(0, 32, 8)]
+        key = [[int(key[i:i+2], 16) for i in range(j, j+8, 2)] for j in range(0, 32, 8)]
+        keys = self.keyScheduling(key)    
+        state = self.add_round_key(state, keys[0])
         
 
         for r in range(1,10):  
-            self.subBytes()
-            self.shiftRows()
-            self.mixColumn()
-            self.add_round_key(keys[16*r: 16*r+16])
+            state = self.subBytes(state)
+            state = self.shiftRows(state)
+            state = self.mixColumn(state)
+            state = self.add_round_key(state, keys[r])
 
-        self.subBytes()
-        self.shiftRows()
-        self.add_round_key(keys[16 * 10: 16 * 10 + 16])
-        return self.state
+
+        state = self.subBytes(state)
+        state = self.shiftRows(state)
+        state = self.add_round_key(state, keys[10])
+        return ''.join(''.join(row) for row in state)
 
 if __name__ == "__main__":
-    blockHex = '00112233445566778899aabbccddeeff'
-    block = bytes.fromhex(blockHex)
-    keyHex = '2b28ab097eaef7cf15d2154f16a6883c'
-    key = bytes.fromhex(keyHex)
-    # ans = '69c4e0d86a7b0430d8cdb78070b4c55a'
-
-    # From Youtube Video
-    # blockHex = '328831e0435a3137f6309807a88da234'
-    # block = bytes.fromhex(blockHex)
-    # keyHex = '2b28ab097eaef7cf15d2154f16a6883c'
-    # key = bytes.fromhex(keyHex)
-
     aes = AES_128()
-    encrypted_block = aes.encrypt(block, key)
-    print("Encrypted Block:", list(map(hex,encrypted_block)), flush=True)
+    key = '2b7e151628aed2a6abf7158809cf4f3c'
+    plaintext = '3243f6a8885a308d313198a2e0370734'
+    expected_ciphertext = '3925841d02dc09fbdc118597196a0b32'
+
+    # Encrypt the plaintext and check if it matches the expected ciphertext
+    ciphertext = aes.encrypt(plaintext, key)
+    if ciphertext == expected_ciphertext:
+        print("it works!")
+    else:
+        print("no")
+        print(ciphertext)
+        print(expected_ciphertext)
 
 
 # https://www.cryptool.org/en/cto/aes-step-by-step
